@@ -1,70 +1,74 @@
-# 1. Base Ubuntu 22.04
-FROM ubuntu:22.04
+# 1. Base Debian
+FROM debian:bullseye
 
-# Évite les questions d'installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 2. Installation Système + Chrome + Outils
-# Installation groupée pour optimiser le temps de build
+# 2. Architecture 32 bits (Obligatoire pour Wine)
+RUN dpkg --add-architecture i386
+
+# 3. Installation des paquets (Wine, Bureau, Outils)
+# J'ai ajouté 'procps' pour htop/kill et nettoyé la liste
 RUN apt-get update && apt-get install -y \
-    xfce4 \
-    xfce4-terminal \
-    xfce4-goodies \
+    wine \
+    wine32 \
+    wine64 \
+    qemu-system-x86 \
+    xz-utils \
     dbus-x11 \
-    xvfb \
-    x11vnc \
-    novnc \
-    python3-websockify \
-    python3-numpy \
-    sudo \
     curl \
     wget \
     git \
-    htop \
-    nano \
-    fonts-liberation \
-    fonts-ubuntu \
-    fonts-noto-color-emoji \
+    firefox-esr \
+    gnome-system-monitor \
+    mate-system-monitor \
+    xfce4 \
+    xfce4-terminal \
+    tightvncserver \
+    python3 \
+    python3-numpy \
+    python3-websockify \
+    fonts-wqy-zenhei \
+    sudo \
+    procps \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 3. Installation Google Chrome
-RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
-    apt-get update && apt-get install -y ./google-chrome-stable_current_amd64.deb && \
-    rm google-chrome-stable_current_amd64.deb
+# 4. Installation manuelle de NoVNC (Comme tu le voulais)
+WORKDIR /opt
+RUN wget -q https://github.com/novnc/noVNC/archive/refs/tags/v1.2.0.tar.gz && \
+    tar -xvf v1.2.0.tar.gz && \
+    mv noVNC-1.2.0 novnc && \
+    rm v1.2.0.tar.gz && \
+    git clone https://github.com/novnc/websockify /opt/novnc/utils/websockify
 
-# 4. Création utilisateur "amintchi"
+# 5. Création de l'utilisateur "amintchi" (Pour éviter les bugs Firefox/Wine en root)
 RUN useradd -m -u 1000 amintchi
 RUN echo "amintchi ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# 5. Configuration Dossiers
-RUN mkdir -p /var/run/dbus && chmod 777 /var/run/dbus
-RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-RUN chown -R amintchi:amintchi /home/amintchi
-
-# 6. CRÉATION DU SCRIPT (AVEC FIX RÉSEAU 0.0.0.0)
-# La modification est dans la dernière ligne echo 'websockify...'
-# On ajoute "0.0.0.0:" devant le port pour forcer l'écoute publique.
-RUN echo '#!/bin/bash' > /home/amintchi/start.sh && \
-    echo 'rm -rf /tmp/.X11-unix/X0' >> /home/amintchi/start.sh && \
-    echo 'echo "--- Demarrage Xvfb ---"' >> /home/amintchi/start.sh && \
-    echo 'Xvfb :0 -screen 0 1920x1080x24 &' >> /home/amintchi/start.sh && \
-    echo 'sleep 2' >> /home/amintchi/start.sh && \
-    echo 'echo "--- Demarrage XFCE ---"' >> /home/amintchi/start.sh && \
-    echo 'dbus-launch startxfce4 &' >> /home/amintchi/start.sh && \
-    echo 'sleep 2' >> /home/amintchi/start.sh && \
-    echo 'echo "--- Demarrage VNC ---"' >> /home/amintchi/start.sh && \
-    echo 'x11vnc -display :0 -nopw -forever -shared -bg' >> /home/amintchi/start.sh && \
-    echo 'echo "--- Demarrage NoVNC (Ecoute sur 0.0.0.0) ---"' >> /home/amintchi/start.sh && \
-    echo 'websockify --web=/usr/share/novnc/ 0.0.0.0:${PORT:-10000} localhost:5900' >> /home/amintchi/start.sh && \
-    chmod +x /home/amintchi/start.sh && \
-    chown amintchi:amintchi /home/amintchi/start.sh
-
-# 7. Démarrage
+# 6. Configuration VNC pour l'utilisateur
 USER amintchi
-WORKDIR /home/amintchi
 ENV HOME=/home/amintchi
-ENV DISPLAY=:0
-ENV RESOLUTION=1920x1080
+RUN mkdir -p $HOME/.vnc
+# Mot de passe VNC (admin123@a)
+RUN echo 'admin123@a' | vncpasswd -f > $HOME/.vnc/passwd
+RUN chmod 600 $HOME/.vnc/passwd
+# Script de démarrage XFCE pour VNC
+RUN echo '#!/bin/sh' > $HOME/.vnc/xstartup && \
+    echo 'unset SESSION_MANAGER' >> $HOME/.vnc/xstartup && \
+    echo 'unset DBUS_SESSION_BUS_ADDRESS' >> $HOME/.vnc/xstartup && \
+    echo 'startxfce4 &' >> $HOME/.vnc/xstartup && \
+    chmod +x $HOME/.vnc/xstartup
 
-CMD ["/bin/bash", "/home/amintchi/start.sh"]
+# 7. Création du script de démarrage compatible Render
+# Note : On utilise 'websockify' directement car launch.sh est parfois capricieux sur les ports
+RUN echo '#!/bin/bash' > $HOME/luo.sh && \
+    echo 'rm -rf /tmp/.X11-unix/X*' >> $HOME/luo.sh && \
+    echo 'echo "--- Demarrage VNC (Port 5901) ---"' >> $HOME/luo.sh && \
+    echo 'vncserver :1 -geometry 1280x720 -depth 24' >> $HOME/luo.sh && \
+    echo 'sleep 3' >> $HOME/luo.sh && \
+    echo 'echo "--- Demarrage NoVNC sur le port ${PORT:-10000} ---"' >> $HOME/luo.sh && \
+    echo '/opt/novnc/utils/websockify/run --web=/opt/novnc 0.0.0.0:${PORT:-10000} localhost:5901' >> $HOME/luo.sh && \
+    chmod +x $HOME/luo.sh
+
+# 8. Lancement
+CMD ["/home/amintchi/luo.sh"]
 
